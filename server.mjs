@@ -1,15 +1,37 @@
+#!/usr/bin/env node
 import { WebSocketServer } from 'ws';
 import { ECSClient, ExecuteCommandCommand } from '@aws-sdk/client-ecs';
 import { spawn } from 'child_process';
 
 const wss = new WebSocketServer({ port: 8080 });
-const ecsClient = new ECSClient({ region: 'ap-south-1' }); // Match your region
+const ecsClient = new ECSClient({ region: 'ap-south-1' });
+
+console.log('WebSocket server running on port 8080');
 
 wss.on('connection', (ws) => {
   console.log('Client connected');
   let sessionProcess = null;
   let taskArn = null;
   let clusterArn = null;
+
+  // Function to wait with countdown
+  const waitWithCountdown = (seconds) => {
+    return new Promise((resolve) => {
+      let remaining = seconds;
+      const interval = setInterval(() => {
+        if (remaining > 0) {
+          ws.send(`Waiting ${remaining}...\r\n`);
+          console.log(`Countdown: Waiting ${remaining}...`);
+          remaining--;
+        } else {
+          clearInterval(interval);
+          ws.send('Executing ECS command now...\r\n');
+          console.log('Countdown complete, executing command');
+          resolve();
+        }
+      }, 1000); // Update every second
+    });
+  };
 
   ws.on('message', async (message) => {
     let data;
@@ -18,7 +40,7 @@ wss.on('connection', (ws) => {
       console.log('Received message:', data);
     } catch (error) {
       console.error('Failed to parse message:', error);
-      ws.send(JSON.stringify({ output: 'Error: Invalid message format\r\n$ ' }));
+      ws.send('Error: Invalid message format\r\n$ ');
       return;
     }
 
@@ -28,54 +50,64 @@ wss.on('connection', (ws) => {
         clusterArn = data.clusterArn || 'default';
         console.log('Starting ECS Exec session with:', { taskArn, clusterArn });
 
-        const command = {
+        // Send initial message and start 60-second countdown
+        ws.send('Task received, waiting 60 seconds for it to stabilize...\r\n');
+        await waitWithCountdown(60); // Wait 60 seconds with countdown
+
+        const command = new ExecuteCommandCommand({
           cluster: clusterArn,
           task: taskArn,
           interactive: true,
-          command: '/bin/bash', // Use bash for Ubuntu
-        };
+          command: '/bin/sh -c "stty -echo; /bin/sh"', // Start shell with echo disabled
+        });
 
-        const ecsCommand = new ExecuteCommandCommand(command);
-        const response = await ecsClient.send(ecsCommand);
-        console.log('ECS response:', response);
+        const response = await ecsClient.send(command);
+        console.log('ECS response:', JSON.stringify(response, null, 2));
 
         if (response.session) {
-          // Start SSM session using the session-manager-plugin via CLI
           const sessionArgs = [
             JSON.stringify(response.session),
-            'ap-south-1', // Match your region
+            'ap-south-1',
             'StartSession',
           ];
 
           sessionProcess = spawn('session-manager-plugin', sessionArgs, {
-            stdio: ['pipe', 'pipe', 'pipe'], // Enable stdin/stdout/stderr
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+
+          sessionProcess.on('error', (err) => {
+            console.error('Spawn error:', err);
+            ws.send(`Error spawning session: ${err.message}\r\n$ `);
+            sessionProcess = null;
           });
 
           sessionProcess.stdout.on('data', (data) => {
-            console.log('Session stdout:', data.toString());
-            ws.send(JSON.stringify({ output: data.toString() }));
+            const output = data.toString();
+            console.log('Session stdout:', output);
+            ws.send(output);
           });
 
           sessionProcess.stderr.on('data', (data) => {
-            console.error('Session stderr:', data.toString());
-            ws.send(JSON.stringify({ output: data.toString() }));
+            const error = data.toString();
+            console.error('Session stderr:', error);
+            ws.send(error);
           });
 
           sessionProcess.on('close', (code) => {
             console.log('Session closed with code:', code);
-            ws.send(JSON.stringify({ output: 'Session closed\r\n$ ' }));
+            ws.send(`Session closed with code ${code}\r\n$ `);
             sessionProcess = null;
           });
 
-          ws.send(JSON.stringify({ output: 'ECS task connected. Run commands!\r\n$ ' }));
+          ws.send('ECS task connected. Run commands!\r\n$ ');
         }
       } catch (err) {
         console.error('ECS error:', err);
-        ws.send(JSON.stringify({ output: 'ECS connection failed: ' + err.message + '\r\n$ ' }));
+        ws.send(`ECS connection failed: ${err.message}\r\n$ `);
       }
     } else if (data.command && sessionProcess) {
       console.log('Executing command:', data.command);
-      sessionProcess.stdin.write(data.command + '\n'); // Send command to the session
+      sessionProcess.stdin.write(data.command + '\n');
     }
   });
 
@@ -87,5 +119,3 @@ wss.on('connection', (ws) => {
     }
   });
 });
-
-console.log('WebSocket server running on port 8080');
