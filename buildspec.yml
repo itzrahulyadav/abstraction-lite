@@ -6,7 +6,7 @@ env:
     AWS_ACCOUNT_ID: "533267257785"
     IMAGE_REPO_NAME: "abstraction-ws"
     IMAGE_TAG: "abstraction-websocket"
-    CONTAINER_NAME: "abstraction"
+    CONTAINER_NAME: "abstraction-ws"
 
 phases:
   pre_build:
