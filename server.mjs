@@ -2,10 +2,28 @@
 import { WebSocketServer } from 'ws';
 import { ECSClient, ExecuteCommandCommand } from '@aws-sdk/client-ecs';
 import { spawn } from 'child_process';
+import http from 'http'; // Add HTTP module
 
-const wss = new WebSocketServer({ port: 8080 });
 const ecsClient = new ECSClient({ region: 'ap-south-1' });
 
+// Create HTTP server for health checks
+const httpServer = http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('OK');
+  } else {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
+  }
+});
+
+// Start HTTP server on port 8080
+httpServer.listen(8080, () => {
+  console.log('HTTP server running on port 8080 for health checks');
+});
+
+// Create WebSocket server, sharing the same port
+const wss = new WebSocketServer({ server: httpServer });
 console.log('WebSocket server running on port 8080');
 
 wss.on('connection', (ws) => {
@@ -14,7 +32,6 @@ wss.on('connection', (ws) => {
   let taskArn = null;
   let clusterArn = null;
 
-  // Function to wait with countdown
   const waitWithCountdown = (seconds) => {
     return new Promise((resolve) => {
       let remaining = seconds;
@@ -29,7 +46,7 @@ wss.on('connection', (ws) => {
           console.log('Countdown complete, executing command');
           resolve();
         }
-      }, 1000); // Update every second
+      }, 1000);
     });
   };
 
@@ -50,15 +67,14 @@ wss.on('connection', (ws) => {
         clusterArn = data.clusterArn || 'default';
         console.log('Starting ECS Exec session with:', { taskArn, clusterArn });
 
-        // Send initial message and start 60-second countdown
         ws.send('Task received, waiting 60 seconds for it to stabilize...\r\n');
-        await waitWithCountdown(60); // Wait 60 seconds with countdown
+        await waitWithCountdown(60);
 
         const command = new ExecuteCommandCommand({
           cluster: clusterArn,
           task: taskArn,
           interactive: true,
-          command: '/bin/sh -c "stty -echo; /bin/sh"', // Start shell with echo disabled
+          command: '/bin/sh -c "stty -echo; /bin/sh"',
         });
 
         const response = await ecsClient.send(command);
