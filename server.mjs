@@ -32,17 +32,20 @@ wss.on('connection', (ws) => {
   let taskArn = null;
   let clusterArn = null;
 
+  // CHANGE: Modified waitWithCountdown to show percentage in a single line
   const waitWithCountdown = (seconds) => {
     return new Promise((resolve) => {
       let remaining = seconds;
+      const totalSeconds = seconds;
       const interval = setInterval(() => {
-        if (remaining > 0) {
-          ws.send(`Waiting ${remaining}...\r\n`);
-          console.log(`Countdown: Waiting ${remaining}...`);
+        if (remaining >= 0) { // Changed to >= to include 0% at the start
+          const percentage = Math.round(((totalSeconds - remaining) / totalSeconds) * 100);
+          ws.send(`\rLoaded ${percentage}%`); // \r overwrites the previous line
+          console.log(`\rLoaded ${percentage}%`); // Same for backend console
           remaining--;
         } else {
           clearInterval(interval);
-          ws.send('Executing ECS command now...\r\n');
+          ws.send('\r Connected \r\n'); // Move to new line after completion
           console.log('Countdown complete, executing command');
           resolve();
         }
@@ -67,8 +70,8 @@ wss.on('connection', (ws) => {
         clusterArn = data.clusterArn || 'default';
         console.log('Starting ECS Exec session with:', { taskArn, clusterArn });
 
-        ws.send('Task received, waiting 60 seconds for it to stabilize...\r\n');
-        await waitWithCountdown(60);
+        ws.send('Trying to connect ...\r\n');
+        await waitWithCountdown(45);
 
         const command = new ExecuteCommandCommand({
           cluster: clusterArn,
@@ -115,7 +118,7 @@ wss.on('connection', (ws) => {
             sessionProcess = null;
           });
 
-          ws.send('ECS task connected. Run commands!\r\n$ ');
+          ws.send('Connected. Run commands!\r\n$ ');
         }
       } catch (err) {
         console.error('ECS error:', err);
